@@ -1,0 +1,300 @@
+---
+title: "analysis"
+author: "RyuTakahashi"
+date: '2022-07-22'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: TRUE
+    highlight: "tango"
+  
+---
+
+## パッケージの読み込み
+```{r}
+library(tidyverse)
+library(psych)
+library(cocor)
+library(lsr)
+library(gridExtra)
+library(lavaan)
+```
+
+## データ処理
+
+```{r}
+df = paste0(getwd(),"/data/raw.data.csv") %>% read.csv(header = TRUE)
+glimpse(df)
+
+df$intence = as.factor(df$intence)
+df$apology.cost = as.factor(df$appology.cost)
+df = df[,-(ncol(df) - 1)]
+
+# 逆転項目を逆転させて、平均値ベクトルを生成する
+forgiveR.df = 
+  6 - df %>% 
+  dplyr::select(starts_with("forgive")) %>% 
+  dplyr::select(
+    ends_with("1"),
+    ends_with("4"),
+    ends_with("5")
+  )
+forgive.df = 
+  df %>% 
+  dplyr::select(starts_with("forgive")) %>% 
+  dplyr::select(
+    ends_with("2"),
+    ends_with("3")
+  ) %>% 
+  cbind(forgiveR.df)
+psych::alpha(forgive.df)
+
+# アルファに問題はないので、行ごとの平均を格納
+df$forgive = rowMeans(forgive.df)
+
+# 誠意期待の平均値ベクトルを生成する
+sincerity.df =
+  df %>% 
+  dplyr::select(starts_with("sincerity"))
+psych::alpha(sincerity.df)
+
+# アルファに問題はないので、行ごとの平均を格納
+df$sincerity = rowMeans(sincerity.df)
+
+# 要因を数値化 or 名目化する
+df$cost.num = 
+  ifelse(df$apology.cost == "Non-Costly",0,1)
+df$int.num = 
+  ifelse(df$intence == "No-Intence",0,1)
+df$sex = 
+  ifelse(df$sex == 3, "unknown",
+         ifelse(df$sex == 1,"female","male"))
+
+# データの中身
+glimpse(df)
+
+```
+
+## 記述統計
+```{r}
+# 各変数の要約を表示
+df %>% 
+  dplyr::select("forgive","sincerity",
+                "apology.cost","intence",
+                "age","sex") %>% 
+  describe()
+
+# 性別の割合
+table(dplyr::select(df,"sex"))
+
+```
+
+## 分散分析
+```{r}
+# 誠意の分散分析
+model.sin = 
+  aov(df$sincerity ~
+        df$intence * df$apology.cost)
+
+# 要約
+summary(model.sin)
+# 効果量
+lsr::etaSquared(model.sin)
+
+# 赦しの分散分析
+model.for =
+  aov(df$forgive ~
+        df$intence * df$apology.cost)
+
+# 要約
+summary(model.for)
+# 効果量
+lsr::etaSquared(model.for)
+```
+
+## 従属相関の検定
+
+### データの準備
+```{r}
+# 小さなデータに分割する
+subdata.n <- subset(df, intence== "No-Intence") #意図なし
+subdata.i <- subset(df, intence== "Intence") #意図あり
+
+# 相関検定のためのデータ準備
+# 意図なし条件のデータ格納
+r.sincerity.n <- cor(subdata.n$cost.num, subdata.n$sincerity)
+r.forgive.n <- cor(subdata.n$cost.num, subdata.n$forgive)
+r.sf.n <- cor(subdata.n$sincerity, subdata.n$forgive)
+length.n <- length(subdata.n$cost.num)
+# 意図あり条件のデータ格納
+r.sincerity.i <- cor(subdata.i$cost.num, subdata.i$sincerity)
+r.forgive.i <- cor(subdata.i$cost.num, subdata.i$forgive)
+r.sf.i <- cor(subdata.i$sincerity, subdata.i$forgive)
+length.i <- length(subdata.i$cost.num)
+# 意図性無視の全データ格納
+r.sincerity <- cor(df$cost.num, df$sincerity)
+r.forgive <- cor(df$cost.num, df$forgive)
+r.sf <- cor(df$sincerity, df$forgive)
+length.all <- length(df$cost.num)
+```
+
+
+### 意図なし条件での従属相関の検定 
+
+(Hotteling's tにて判断)
+
+```{r}
+# 結果：誠意の知覚の期待の方が高かった(.50 vs. .21)
+cocor.dep.groups.overlap(
+  r.jk=r.sincerity.n,
+  r.jh=r.forgive.n,
+  r.kh=r.sf.n,
+  n=length.n,
+  alternative="two-sided")
+```
+
+### 意図なし条件での従属相関の検定          
+
+(Hotteling's tにて判断)
+```{r}
+# 結果：誠意の知覚の期待の方が高かった(.46 v.s. .10)
+cocor.dep.groups.overlap(
+  r.jk=r.sincerity.i,
+  r.jh=r.forgive.i,
+  r.kh=r.sf.i,
+  n=length.i,
+  alternative="two-sided")
+```
+
+## 共分散構造分析
+
+```{r}
+# モデル
+md_model = "
+# direct(label:c)
+forgive ~ c*cost.num
+
+# mediator(label:a,b)
+sincerity ~ a*cost.num
+forgive ~ b*sincerity
+
+# indirect effect(a*b)
+ab := a*b
+
+# total effect
+total := c + (a*b)
+"
+
+# ブートストラップ=2000の最尤法で分析
+fit_med = sem(md_model,data=df,
+              estimator = "ML",
+              se = "bootstrap",
+              bootstrap = 2000)
+
+# 結果
+summary(fit_med,standardized = TRUE,
+        fit.measures = TRUE, ci = TRUE)
+fitMeasures(fit_med)
+```
+
+## 図の作成
+### バイオリンプロット
+```{r}
+# X軸のタイトル
+xtitle = "Malicious               No　　"
+
+# 誠意の知覚の期待を従属変数とした条件別のプロット
+sincerity.plt = 
+  ggplot(data=df,
+         aes(x=interaction(apology.cost,intence), 
+             y=sincerity,
+             color=apology.cost)) +
+  theme_classic() +
+  geom_violin(size = 0.8) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.3),
+             alpha=0.5) +
+  scale_color_discrete(name = "Apology Cost",
+                       labels = c("0" = "Non-Costly",
+                                  "1" = "Costly")) +
+  theme(axis.text.x = element_blank())+
+  scale_y_continuous(limits = c(1,5)) +
+  stat_summary(fun= mean,geom = "point",
+               size = 1.5, colour = "black")+
+  stat_summary(fun.data = "mean_se",geom = "errorbar",
+               width = .2, lwd = .5,
+               color = "black")+
+  labs(x = xtitle,y = "Expectations of Sincerity")
+
+# 赦し期待を従属変数とした条件別プロット
+forgive.plt = 
+  ggplot(data=df,
+         aes(x=interaction(apology.cost,intence), y=forgive,color=apology.cost)) +
+  theme_classic() +
+  geom_violin(size = 0.8) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.3),
+             alpha=0.5) +
+  scale_color_discrete(name = "Apology Cost",
+                       labels = c("0" = "Non-Costly",
+                                  "1" = "Costly")) +
+  theme(axis.text.x = element_blank())+
+  scale_y_continuous(limits = c(1,5)) +
+  stat_summary(fun= mean,geom = "point",
+               size = 1.5, colour = "black")+
+  stat_summary(fun.data = "mean_se",geom = "errorbar",
+               width = .2, lwd = .5,
+               color = "black")+
+  labs(x = xtitle,y = "Expectations of Forgiveness")
+
+# legendがないグラフの作成
+sin.noleg_plt = sincerity.plt + theme(legend.position = "none")
+for.noleg_plt = forgive.plt + theme(legend.position = "none") 
+
+# Legendsのみのオブジェクトを作る
+tmp <- ggplot_gtable(ggplot_build(forgive.plt))
+
+# 並べて表示
+# なお、論文に掲載されている画像の大きさはは600 x 400ピクセル
+leg = tmp$grobs[[15]] #legendの格納
+grid.arrange(arrangeGrob(for.noleg_plt+labs(title = "(a)"),
+                         sin.noleg_plt+labs(title = "(b)"), 
+                         leg, 
+                         ncol=3, 
+                         widths=c(3/7, 3/7, 1/7)))
+```
+
+### 相関係数と信頼区間
+```{r}
+# 信頼区間と相関係数を格納する
+int.sin_cor = cor.test(subdata.i$sincerity,subdata.i$cost.num)
+int.for_cor = cor.test(subdata.i$forgive,subdata.i$cost.num)
+noint.sin_cor = cor.test(subdata.n$sincerity,subdata.n$cost.num)
+noint.for_cor = cor.test(subdata.n$forgive,subdata.n$cost.num)
+
+# 信頼区間と相関係数を対応付けしたmatrixの作成
+cor.Matrix = matrix(c("Malicious - S","Sincerity",int.sin_cor$estimate,int.sin_cor$conf.int[1],int.sin_cor$conf.int[2],
+                      "Malicious - F","Forgiveness",int.for_cor$estimate,int.for_cor$conf.int[1],int.for_cor$conf.int[2],
+                      "No Intention - S","Sincerity",noint.sin_cor$estimate,noint.sin_cor$conf.int[1],noint.sin_cor$conf.int[2],
+                      "No Intention - F","Forgiveness",noint.for_cor$estimate,noint.for_cor$conf.int[1],noint.for_cor$conf.int[2]),
+                    nrow = 4,byrow = T)
+
+# データを整える
+colnames(cor.Matrix) = c("id","Condition","cor","cor.conf.min","cor.conf.max")
+cor.Matrix = as.data.frame(cor.Matrix)
+cor.Matrix$cor = as.numeric(cor.Matrix$cor)
+cor.Matrix$cor.conf.max = as.numeric(cor.Matrix$cor.conf.max)
+cor.Matrix$cor.conf.min = as.numeric(cor.Matrix$cor.conf.min)
+
+# プロット
+ggplot(data = cor.Matrix,
+       aes(x = reorder(id,cor),
+           y = cor,
+           color = Condition)) + 
+  labs(x = "",y = "Correlation") +
+  # scale_y_reverse()+
+  theme_classic() +
+  geom_pointrange(
+    mapping = aes(ymin = cor.conf.min,ymax = cor.conf.max)) +
+  geom_hline(yintercept = 0, linetype = "longdash")+
+  coord_flip()
+```
